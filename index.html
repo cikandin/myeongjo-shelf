@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="description" content="텍스트 파일과 zip을 나눔명조로 읽는 뷰어">
+<style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);box-sizing:border-box}body{margin:0;font-size:14px}img{max-width:100%}</style><title>명조 서재</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Nanum+Myeongjo:wght@400;700;800&family=Noto+Sans+KR:wght@400;500&display=block">
+<style>
+/* 레이아웃: 왼쪽 책장(파일 목록) + 오른쪽 책 펼침면(넓으면 두 쪽, 좁으면 한 쪽). 좁은 화면에선 책장이 서랍처럼 덮인다 */
+:root {
+  --paper: #f7f5f0;
+  --ink: #26221e;
+  --muted: #7b746b;
+  --rule: #e2ddd3;
+  --shelf: #efebe3;
+  --accent: #6b3f2a;
+  --sel: #e6dccd;
+  --serif: "Nanum Myeongjo", "NanumMyeongjo", "Batang", "AppleMyungjo", serif;
+  --ui: "Noto Sans KR", "Malgun Gothic", "Apple SD Gothic Neo", system-ui, sans-serif;
+  --fs: 19px;
+  --lh: 1.9;
+  --stroke: 0.3px;
+  --wt: 400;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #1c1a18; --ink: #ddd7cc; --muted: #8f877c; --rule: #33302b;
+    --shelf: #232120; --accent: #d6a582; --sel: #3a332c; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #1c1a18; --ink: #ddd7cc; --muted: #8f877c; --rule: #33302b;
+  --shelf: #232120; --accent: #d6a582; --sel: #3a332c; color-scheme: dark;
+}
+:root[data-paper="sepia"] {
+  --paper: #f1e6cf; --ink: #33281c; --muted: #85725b; --rule: #dfcfae;
+  --shelf: #e9dcc0; --accent: #7a3e1d; --sel: #dfcba5; color-scheme: light;
+}
+
+[hidden] { display: none !important; }
+html, body { height: 100%; }
+body {
+  background: var(--paper); color: var(--ink);
+  font-family: var(--ui);
+  display: grid; grid-template-columns: 17rem 1fr;
+  overflow: hidden;
+}
+
+/* 책장 */
+.shelf {
+  background: var(--shelf); border-right: 1px solid var(--rule);
+  display: flex; flex-direction: column; min-height: 0;
+}
+.shelf-head {
+  padding: 18px 16px 12px; padding-left: max(16px, env(safe-area-inset-left, 0px));
+  display: flex; flex-direction: column; gap: 10px;
+}
+.brand { font-family: var(--serif); font-weight: 800; font-size: 20px; letter-spacing: .02em; }
+.open-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.btn {
+  font: 500 13px var(--ui); color: var(--ink);
+  background: transparent; border: 1px solid var(--rule); border-radius: 6px;
+  padding: 6px 10px; cursor: pointer;
+}
+.btn:hover { border-color: var(--accent); color: var(--accent); }
+.btn:focus-visible, .book:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+#q {
+  width: 100%; box-sizing: border-box; font: 13px var(--ui); color: var(--ink); background: var(--paper);
+  border: 1px solid var(--rule); border-radius: 6px; padding: 6px 9px;
+}
+.books { list-style: none; margin: 0; padding: 4px 8px 16px; overflow-y: auto; flex: 1; min-height: 0; }
+.books li { display: flex; align-items: stretch; border-radius: 6px; }
+.books li:hover { background: var(--sel); }
+.book {
+  flex: 1; min-width: 0; text-align: left; cursor: pointer;
+  background: none; border: 0; border-radius: 6px; color: var(--ink);
+  font: 15px/1.4 var(--serif); padding: 8px 10px;
+}
+.book[aria-current="true"] { background: var(--sel); font-weight: 700; }
+.book small { display: block; font: 11px var(--ui); color: var(--muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.del {
+  visibility: hidden; border: 0; background: none; color: var(--muted); cursor: pointer;
+  font: 16px var(--ui); padding: 0 10px;
+}
+.books li:hover .del, .del:focus-visible { visibility: visible; }
+.del:hover { color: var(--accent); }
+.shelf-foot { padding: 10px 16px; font-size: 11px; line-height: 1.6; color: var(--muted); border-top: 1px solid var(--rule); }
+
+/* 상단 막대 */
+.reader { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.bar {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  padding-block: 10px; padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  border-bottom: 1px solid var(--rule); font-size: 12px; color: var(--muted);
+}
+.bar label { display: flex; align-items: center; gap: 6px; }
+.bar input[type="range"] { width: 80px; accent-color: var(--accent); }
+.bar select { font: 12px var(--ui); color: var(--ink); background: var(--paper); border: 1px solid var(--rule); border-radius: 5px; padding: 3px 4px; }
+.menu-btn { display: none; }
+.spacer { flex: 1; }
+.pageno { font-variant-numeric: tabular-nums; }
+.progress { height: 2px; background: var(--rule); }
+.progress i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s; }
+
+/* 펼침면 */
+.stage {
+  flex: 1; min-height: 0; position: relative; overflow: hidden;
+  padding: 40px max(24px, env(safe-area-inset-right, 0px)) 36px max(24px, env(safe-area-inset-left, 0px));
+  user-select: none; -webkit-user-select: none; cursor: pointer;
+}
+.cols {
+  margin: 0 auto; overflow: hidden;
+  column-fill: auto;
+  font-family: var(--serif); font-size: var(--fs); line-height: var(--lh); font-weight: var(--wt);
+  /* 나눔명조의 가는 가로획이 윈도에서 1px 아래로 떨어져 끊겨 보이는 것을 획 둘레를 살짝 칠해 메운다 */
+  -webkit-text-stroke: var(--stroke) currentColor;
+  text-rendering: optimizeLegibility; font-kerning: normal; font-synthesis: none;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+}
+.title {
+  font: 800 calc(var(--fs) * 1.45)/1.35 var(--serif); text-wrap: balance;
+  margin: 0 0 1.4em; padding-bottom: .7em; border-bottom: 1px solid var(--rule);
+  break-inside: avoid;
+}
+.text {
+  font: inherit; white-space: pre-wrap; word-break: keep-all; overflow-wrap: anywhere;
+  margin: 0; orphans: 2; widows: 2;
+}
+.filler { break-before: column; height: 1px; }
+.foot {
+  position: absolute; left: 0; right: 0; bottom: 10px; text-align: center;
+  font: 11px var(--ui); color: var(--muted); font-variant-numeric: tabular-nums; pointer-events: none;
+}
+.loading {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  background: var(--paper); font: 14px var(--ui); color: var(--muted);
+}
+/* 책갈피 */
+.reader { position: relative; }
+.btn[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--paper); }
+.ribbon {
+  position: absolute; top: 0; width: 16px; height: 38px; background: var(--accent);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 78%, 0 100%); pointer-events: none;
+}
+.marks {
+  position: absolute; z-index: 12; top: 52px; right: max(16px, env(safe-area-inset-right, 0px));
+  width: min(22rem, calc(100% - 32px)); max-height: 60%; overflow-y: auto;
+  background: var(--paper); border: 1px solid var(--rule); border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.14); padding: 6px;
+}
+.marks h2 { font: 700 13px var(--ui); margin: 6px 8px 8px; color: var(--muted); letter-spacing: .04em; }
+.marks ul { list-style: none; margin: 0; padding: 0; }
+.marks li { display: flex; align-items: stretch; border-radius: 6px; }
+.marks li:hover { background: var(--sel); }
+.mark-go {
+  flex: 1; min-width: 0; text-align: left; background: none; border: 0; cursor: pointer; color: var(--ink);
+  padding: 8px 10px; display: grid; gap: 3px;
+}
+.mark-go b { font: 500 11px var(--ui); color: var(--accent); font-variant-numeric: tabular-nums; }
+.mark-go span { font: 14px/1.5 var(--serif); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.marks .empty { font-size: 13px; line-height: 1.6; color: var(--muted); padding: 4px 8px 10px; margin: 0; }
+.marks .del { visibility: visible; }
+
+.drop {
+  position: fixed; inset: 0; z-index: 20; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  font: 700 22px var(--serif); color: var(--accent);
+  border: 3px dashed var(--accent);
+}
+
+@media (max-width: 760px) {
+  body { grid-template-columns: 1fr; }
+  .shelf {
+    position: fixed; inset: 0 auto 0 0; width: min(84vw, 20rem); z-index: 15;
+    transform: translateX(-102%); transition: transform .2s ease;
+    padding-top: env(safe-area-inset-top, 0px);
+  }
+  body.shelf-open .shelf { transform: none; box-shadow: 0 0 40px rgba(0,0,0,.25); }
+  .menu-btn { display: inline-block; }
+  .bar .hide-sm { display: none; }
+  .del { visibility: visible; }
+  .stage { padding-top: 24px; padding-bottom: 32px; }
+}
+@media (prefers-reduced-motion: reduce) { .shelf, .progress i { transition: none; } }
+</style>
+
+<aside class="shelf" id="shelf">
+  <div class="shelf-head">
+    <div class="brand">명조 서재</div>
+    <div class="open-row">
+      <button class="btn" id="openFiles" type="button">파일 열기</button>
+      <button class="btn" id="openDir" type="button">폴더 열기</button>
+    </div>
+    <input id="q" type="search" placeholder="제목 찾기" aria-label="제목 찾기">
+    <input id="fileInput" type="file" accept=".txt,.zip,text/plain,application/zip" multiple hidden>
+    <input id="dirInput" type="file" webkitdirectory multiple hidden>
+  </div>
+  <ul class="books" id="books"></ul>
+  <div class="shelf-foot" id="saveNote">책은 이 컴퓨터의 브라우저 저장소에 보관합니다. 창에 끌어다 놓아도 열립니다.</div>
+</aside>
+
+<main class="reader">
+  <div class="bar">
+    <button class="btn menu-btn" id="menuBtn" type="button">책장</button>
+    <label>글자 <input id="fs" type="range" min="14" max="30" step="1"></label>
+    <label class="hide-sm">줄 간격 <input id="lh" type="range" min="1.4" max="2.6" step="0.1"></label>
+    <label class="hide-sm">쪽 폭 <input id="ms" type="range" min="18" max="44" step="1"></label>
+    <label>획
+      <select id="ink">
+        <option value="thin">원래대로</option>
+        <option value="firm">보강</option>
+        <option value="bold">굵게</option>
+      </select>
+    </label>
+    <label class="hide-sm">펼침
+      <select id="spread">
+        <option value="auto">자동</option>
+        <option value="1">한 쪽</option>
+        <option value="2">두 쪽</option>
+      </select>
+    </label>
+    <label>바탕
+      <select id="paper">
+        <option value="auto">시스템</option>
+        <option value="light">흰 종이</option>
+        <option value="sepia">누런 종이</option>
+        <option value="dark">밤</option>
+      </select>
+    </label>
+    <span class="spacer"></span>
+    <button class="btn" id="markBtn" type="button" aria-pressed="false" title="이 쪽에 책갈피 꽂기 (B)">책갈피 꽂기</button>
+    <button class="btn" id="marksBtn" type="button" aria-expanded="false" aria-controls="marksPanel">목록</button>
+    <span class="pageno" id="pageno"></span>
+  </div>
+  <div class="progress"><i id="prog"></i></div>
+  <div class="marks" id="marksPanel" hidden>
+    <h2>이 책의 책갈피</h2>
+    <ul id="marksList"></ul>
+  </div>
+  <div class="stage" id="stage" aria-label="왼쪽을 누르면 앞쪽, 오른쪽을 누르면 다음 쪽">
+    <div class="cols" id="cols">
+      <h1 class="title" id="title"></h1>
+      <pre class="text" id="text"></pre>
+      <div class="filler" id="filler" hidden></div>
+    </div>
+    <div class="ribbon" id="ribbon" hidden></div>
+    <div class="foot" id="foot"></div>
+    <div class="loading" id="loading" hidden>글꼴을 받는 중입니다…</div>
+  </div>
+</main>
+<div class="drop" id="drop" hidden>여기에 놓으면 책장에 꽂힙니다</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script>
+const $ = (id) => document.getElementById(id);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+
+/* ---- 책 보관함 (IndexedDB — 이 컴퓨터 디스크에 남는다) ---- */
+const shelfDB = (() => {
+  let opening;
+  const open = () => opening ||= new Promise((res, rej) => {
+    const r = indexedDB.open("myeongjo-shelf", 1);
+    r.onupgradeneeded = () => r.result.createObjectStore("books", { keyPath: "name" });
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+  const run = async (mode, fn) => {
+    const db = await open();
+    return new Promise((res, rej) => {
+      const t = db.transaction("books", mode);
+      const req = fn(t.objectStore("books"));
+      t.oncomplete = () => res(req && req.result);
+      t.onerror = t.onabort = () => rej(t.error);
+    });
+  };
+  return {
+    all: () => run("readonly", (s) => s.getAll()),
+    putMany: (list) => run("readwrite", (s) => { for (const b of list) s.put(b); }),
+    del: (name) => run("readwrite", (s) => s.delete(name)),
+  };
+})();
+
+const SAMPLE = {
+  name: "명조 서재 사용법.txt",
+  text:
+`이 화면은 텍스트 파일을 나눔명조로 읽는 뷰어입니다.
+
+왼쪽 위의 「파일 열기」로 txt 파일을 여러 개 한꺼번에 고르거나, 「폴더 열기」로 폴더째 책장에 꽂을 수 있습니다. zip 파일을 고르면 그 안의 txt 파일이 모두 책장에 꽂힙니다. 파일을 창 위에 끌어다 놓아도 됩니다.
+
+한 번 꽂은 책은 이 컴퓨터의 브라우저 저장소에 그대로 보관합니다. 창을 닫았다가 다시 열어도 책장과 읽던 쪽이 남아 있습니다. 필요 없는 책은 목록에서 이름 옆의 ×로 뺍니다.
+
+책장을 넘길 때는 펼침면의 오른쪽을 누르면 다음 쪽, 왼쪽을 누르면 앞쪽입니다. 키보드는 → ← 화살표, 스페이스바, PageDown·PageUp이 됩니다. 마우스 휠과 손가락으로 밀기도 됩니다.
+
+UTF-8 파일은 그대로 읽고, UTF-8이 아니면 EUC-KR(CP949)로 다시 읽어 봅니다.
+
+「획」에서 글자 획의 굵기를 고릅니다. 나눔명조는 가로획이 아주 가늘어서 화면에 따라 획이 군데군데 끊겨 보입니다. 「보강」은 획 둘레를 아주 얇게 칠해 끊긴 곳을 메우고, 「굵게」는 나눔명조 볼드체로 바꿉니다.`,
+};
+
+let books = [];          // {name, text, size, added}
+let current = null;
+
+/* ---- 설정 ---- */
+const INK = { thin: { stroke: "0px", wt: 400 }, firm: { stroke: "0.3px", wt: 400 }, bold: { stroke: "0px", wt: 700 } };
+const settings = Object.assign({ fs: 19, lh: 1.9, ms: 30, paper: "auto", ink: "firm", spread: "auto" }, store.get("viewer.settings", {}));
+function applySettings() {
+  const root = document.documentElement, r = root.style;
+  r.setProperty("--fs", settings.fs + "px");
+  r.setProperty("--lh", settings.lh);
+  r.setProperty("--stroke", INK[settings.ink].stroke);
+  r.setProperty("--wt", INK[settings.ink].wt);
+  root.removeAttribute("data-paper");
+  if (settings.paper === "auto") root.removeAttribute("data-theme");
+  else if (settings.paper === "sepia") { root.setAttribute("data-theme", "light"); root.setAttribute("data-paper", "sepia"); }
+  else root.setAttribute("data-theme", settings.paper);
+  for (const k of ["fs", "lh", "ms", "paper", "ink", "spread"]) $(k).value = settings[k];
+  store.set("viewer.settings", settings);
+}
+for (const k of ["fs", "lh", "ms", "paper", "ink", "spread"]) {
+  $(k).addEventListener(k === "paper" || k === "ink" || k === "spread" ? "change" : "input", async (e) => {
+    const off = topOffset();
+    settings[k] = e.target.type === "range" ? Number(e.target.value) : e.target.value;
+    applySettings();
+    if (k === "ink") await ensureFont();
+    relayout(off);
+  });
+}
+
+/* ---- 글꼴: 이 책에 쓰인 글자가 모두 받아진 뒤에 그린다 ----
+   구글 폰트는 한글을 100여 조각으로 나눠, 화면에 처음 나온 글자의 조각만 늦게 받는다.
+   그 사이 바탕체 같은 대체 글꼴로 그려져 군데군데 다른 글꼴이 섞여 보이므로, 먼저 다 받아 둔다. */
+let fontChars = "";
+async function ensureFont() {
+  if (!document.fonts || !fontChars) return;
+  $("loading").hidden = false;
+  const wt = INK[settings.ink].wt;
+  try {
+    await Promise.race([
+      Promise.all([
+        document.fonts.load(`${wt} 20px "Nanum Myeongjo"`, fontChars),
+        document.fonts.load(`800 20px "Nanum Myeongjo"`, $("title").textContent || "가"),
+      ]),
+      new Promise((r) => setTimeout(r, 8000)),
+    ]);
+  } catch {}
+  $("loading").hidden = true;
+}
+const uniqueChars = (s) => [...new Set(s.replace(/\s/g, ""))].join("");
+
+/* ---- 읽기 ---- */
+function decodeBuf(buf) {
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(buf).replace(/^﻿/, ""); }
+  catch { return new TextDecoder("euc-kr").decode(buf); }
+}
+const isTxt = (n) => /\.txt$/i.test(n);
+const isZip = (f) => /\.zip$/i.test(f.name) || /zip/.test(f.type);
+
+/* zip 안의 txt를 폴더처럼 꺼낸다. 윈도에서 만든 zip은 한글 파일 이름이 CP949로 들어 있어 이름도 같은 규칙으로 읽는다 */
+async function unzip(file) {
+  if (!window.JSZip) throw new Error("압축 도구를 불러오지 못했습니다");
+  const zip = await JSZip.loadAsync(file, { decodeFileName: (bytes) => decodeBuf(new Uint8Array(bytes)) });
+  const out = [];
+  for (const e of Object.values(zip.files)) {
+    if (e.dir || e.name.includes("__MACOSX/")) continue;
+    const base = e.name.split("/").pop();
+    if (!isTxt(base) || base.startsWith("._")) continue;
+    const buf = await e.async("uint8array");
+    out.push({ name: base, buf, size: buf.byteLength, from: file.name });
+  }
+  return out;
+}
+const prettyName = (n) => n.replace(/\.txt$/i, "").replace(/^\[[^\]]*\]\s*/, "");
+const sizeLabel = (b) => b >= 1e6 ? (b / 1e6).toFixed(1) + "MB" : Math.max(1, Math.round(b / 1e3)) + "KB";
+const sortBooks = () => books.sort((a, b) => prettyName(a.name).localeCompare(prettyName(b.name), "ko") || a.name.localeCompare(b.name));
+
+async function addFiles(list) {
+  const items = [];
+  let failed = false;
+  for (const f of [...list]) {
+    if (isZip(f)) {
+      noteSave(`${f.name}의 압축을 푸는 중입니다…`);
+      try { items.push(...await unzip(f)); }
+      catch (err) { failed = true; noteSave(`${f.name}을 열지 못했습니다. ${err && err.message || ""}`); }
+    } else if (isTxt(f.name) || f.type === "text/plain") {
+      items.push({ name: f.name, buf: await f.arrayBuffer(), size: f.size, from: null });
+    }
+  }
+  if (!items.length) { if (!failed && [...list].some(isZip)) noteSave("압축 파일 안에 txt 파일이 없습니다."); return; }
+  const files = items;
+  const fresh = [];
+  for (const f of files) {
+    const b = { name: f.name, text: decodeBuf(f.buf).replace(/\r\n?/g, "\n"), size: f.size, from: f.from, added: Date.now() };
+    const i = books.findIndex((x) => x.name === b.name);
+    if (i >= 0) books[i] = b; else books.push(b);
+    fresh.push(b);
+  }
+  books = books.filter((b) => !b.sample);
+  sortBooks();
+  try { await shelfDB.putMany(fresh); } catch (err) { noteSave("책을 보관하지 못했습니다: " + (err && err.name || "저장소 오류") + ". 이번 창에서만 읽을 수 있습니다."); }
+  renderShelf(); updateSaveNote();
+  open(books.find((b) => b.name === fresh[0].name) || books[0]);
+}
+
+async function removeBook(b) {
+  books = books.filter((x) => x !== b);
+  try { await shelfDB.del(b.name); } catch {}
+  try { localStorage.removeItem("viewer.at." + b.name); localStorage.removeItem(marksKey(b)); } catch {}
+  if (current === b) { current = null; open(books[0] || sampleBook()); }
+  renderShelf(); updateSaveNote();
+}
+
+function renderShelf() {
+  const q = $("q").value.trim();
+  const ul = $("books"); ul.textContent = "";
+  for (const b of books) {
+    if (q && !b.name.includes(q)) continue;
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.className = "book"; btn.type = "button";
+    btn.setAttribute("aria-current", b === current ? "true" : "false");
+    btn.textContent = prettyName(b.name);
+    const at = store.get("viewer.at." + b.name, null);
+    const small = document.createElement("small");
+    small.textContent = sizeLabel(b.size) + (b.from ? " · " + b.from.replace(/\.zip$/i, "") : "") + (at && at.frac > 0 ? ` · ${Math.round(at.frac * 100)}% 읽음` : "")
+      + (marksOf(b).length ? ` · 책갈피 ${marksOf(b).length}` : "");
+    btn.append(small);
+    btn.addEventListener("click", () => { open(b); document.body.classList.remove("shelf-open"); });
+    li.append(btn);
+    if (!b.sample) {
+      const del = document.createElement("button");
+      del.className = "del"; del.type = "button"; del.textContent = "×";
+      del.title = "책장에서 빼기"; del.setAttribute("aria-label", prettyName(b.name) + " 책장에서 빼기");
+      del.addEventListener("click", () => removeBook(b));
+      li.append(del);
+    }
+    ul.append(li);
+  }
+}
+$("q").addEventListener("input", renderShelf);
+
+function noteSave(msg) { $("saveNote").textContent = msg; }
+async function updateSaveNote() {
+  const real = books.filter((b) => !b.sample);
+  if (!real.length) { noteSave("책은 이 컴퓨터의 브라우저 저장소에 보관합니다. 창에 끌어다 놓아도 열립니다."); return; }
+  const bytes = real.reduce((s, b) => s + b.size, 0);
+  let kept = "";
+  try { kept = (await navigator.storage.persisted()) ? " · 지워지지 않게 고정됨" : ""; } catch {}
+  noteSave(`${real.length}권 · ${sizeLabel(bytes)}을 이 컴퓨터에 보관 중${kept}`);
+}
+
+async function open(b) {
+  if (!b) return;
+  if (current) saveAt();
+  current = b;
+  $("title").textContent = prettyName(b.name);
+  $("text").textContent = b.text.replace(/^\n+/, "");
+  document.title = prettyName(b.name) + " · 명조 서재";
+  store.set("viewer.last", b.name);
+  fontChars = uniqueChars(b.text);
+  await ensureFont();
+  const at = store.get("viewer.at." + b.name, null);
+  relayout(at ? at.off : 0);
+  renderShelf();
+}
+
+/* ---- 쪽 나누기 ----
+   본문은 CSS 다단(column)으로 흘리고, 펼침면 너비만큼 옆으로 밀어 쪽을 넘긴다.
+   읽던 자리는 쪽 번호가 아니라 '그 쪽 첫 글자의 위치'로 기억한다 — 글자 크기·창 크기를 바꿔도 같은 문장으로 돌아온다. */
+const stage = $("stage"), cols = $("cols"), textEl = $("text");
+let L = { colW: 0, gap: 0, k: 1, step: 1, spreads: 1 }, spread = 0;
+
+function relayout(offset) {
+  const cs = getComputedStyle(stage);
+  const aw = stage.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  const ah = stage.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
+  const gap = Math.round(settings.fs * 3);
+  const want = settings.ms * settings.fs;
+  let k = settings.spread === "auto" ? (aw >= want * 2 + gap ? 2 : 1) : Number(settings.spread);
+  if (k === 2 && aw < 2 * 12 * settings.fs + gap) k = 1;
+  const colW = Math.floor(Math.min(want, (aw - (k - 1) * gap) / k));
+  const width = k * colW + (k - 1) * gap;
+  const lineH = settings.fs * settings.lh;
+  const height = Math.max(lineH, Math.floor(ah / lineH) * lineH);   // 줄이 쪽 아래에서 잘리지 않게 줄 높이의 배수로
+  Object.assign(cols.style, { width: width + "px", height: height + "px", columnWidth: colW + "px", columnGap: gap + "px", columnCount: "auto" });
+  $("filler").hidden = true;
+  let n = Math.max(1, Math.round((cols.scrollWidth + gap) / (colW + gap)));
+  if (k === 2 && n % 2 === 1) { $("filler").hidden = false; n = Math.max(1, Math.round((cols.scrollWidth + gap) / (colW + gap))); }
+  L = { colW, gap, k, step: width + gap, spreads: Math.max(1, Math.ceil(n / k)), cols: n };
+  goto(spreadOf(offset || 0));
+}
+
+function textNode() { return textEl.firstChild; }
+function spreadOf(offset) {
+  const node = textNode();
+  if (!node || offset <= 0) return 0;
+  const o = Math.min(offset, node.length - 1);
+  const range = document.createRange(); range.setStart(node, o); range.setEnd(node, o + 1);
+  const rect = range.getClientRects()[0] || range.getBoundingClientRect();
+  const base = cols.getBoundingClientRect().left;
+  const col = Math.floor((rect.left - base + cols.scrollLeft + 1) / (L.colW + L.gap));
+  return Math.floor(col / L.k);
+}
+function topOffset() {
+  const node = textNode();
+  if (!node || spread === 0) return 0;
+  const r = cols.getBoundingClientRect();
+  const x = r.left + 4, y = r.top + settings.fs * 0.6;
+  let n = null, o = 0;
+  if (document.caretPositionFromPoint) { const p = document.caretPositionFromPoint(x, y); if (p) { n = p.offsetNode; o = p.offset; } }
+  else if (document.caretRangeFromPoint) { const p = document.caretRangeFromPoint(x, y); if (p) { n = p.startContainer; o = p.startOffset; } }
+  return n === node ? o : Math.round((spread / Math.max(1, L.spreads - 1)) * node.length);
+}
+
+function goto(i) {
+  spread = Math.max(0, Math.min(L.spreads - 1, i));
+  cols.scrollLeft = spread * L.step;
+  const first = spread * L.k + 1, last = Math.min(L.cols, first + L.k - 1);
+  $("pageno").textContent = `${first === last ? first : first + "–" + last} / ${L.cols}쪽`;
+  $("foot").textContent = L.spreads > 1 ? `${spread + 1} / ${L.spreads}` : "";
+  const frac = L.spreads > 1 ? spread / (L.spreads - 1) : 1;
+  $("prog").style.width = (frac * 100) + "%";
+  clearTimeout(saveT); saveT = setTimeout(saveAt, 300);
+  updateMarkUI();
+}
+
+/* ---- 책갈피: 쪽 번호가 아니라 그 쪽 첫 글자의 위치로 꽂는다 — 글자 크기를 바꿔도 같은 문장을 가리킨다 ---- */
+const marksKey = (b) => "viewer.marks." + b.name;
+const marksOf = (b) => (b ? store.get(marksKey(b), []) : []);
+const marksHere = () => marksOf(current).filter((m) => spreadOf(m.off) === spread);
+function snippet(off) {
+  const node = textNode();
+  const s = node ? node.data.slice(off, off + 120).replace(/\s+/g, " ").trim() : "";
+  return s.slice(0, 50) || "(빈 쪽)";
+}
+function toggleMark() {
+  if (!current) return;
+  const all = marksOf(current), here = new Set(marksHere().map((m) => m.off));
+  if (here.size) store.set(marksKey(current), all.filter((m) => !here.has(m.off)));
+  else {
+    const off = topOffset();
+    all.push({ off, at: Date.now(), snip: snippet(off) });
+    all.sort((a, b) => a.off - b.off);
+    store.set(marksKey(current), all);
+  }
+  updateMarkUI(); renderMarks(); renderShelf();
+}
+function updateMarkUI() {
+  const on = marksHere().length > 0;
+  $("markBtn").setAttribute("aria-pressed", on ? "true" : "false");
+  $("markBtn").textContent = on ? "책갈피 빼기" : "책갈피 꽂기";
+  const n = marksOf(current).length;
+  $("marksBtn").textContent = n ? `목록 ${n}` : "목록";
+  const rb = $("ribbon");
+  rb.hidden = !on;
+  if (on) rb.style.left = (cols.offsetLeft + cols.offsetWidth - 30) + "px";
+}
+function renderMarks() {
+  const ul = $("marksList"); ul.textContent = "";
+  const all = marksOf(current);
+  if (!all.length) {
+    const p = document.createElement("li");
+    p.className = "empty";
+    p.textContent = "아직 꽂은 책갈피가 없습니다. 「책갈피 꽂기」나 B 키로 지금 쪽에 꽂습니다.";
+    ul.append(p); return;
+  }
+  for (const m of all) {
+    const li = document.createElement("li");
+    const go = document.createElement("button");
+    go.className = "mark-go"; go.type = "button";
+    const s = spreadOf(m.off), first = s * L.k + 1;
+    const d = new Date(m.at);
+    const b = document.createElement("b"); b.textContent = `${first}쪽 · ${d.getMonth() + 1}월 ${d.getDate()}일`;
+    const t = document.createElement("span"); t.textContent = m.snip;
+    go.append(b, t);
+    go.addEventListener("click", () => { goto(spreadOf(m.off)); closeMarks(); });
+    const del = document.createElement("button");
+    del.className = "del"; del.type = "button"; del.textContent = "×";
+    del.title = "책갈피 빼기"; del.setAttribute("aria-label", `${first}쪽 책갈피 빼기`);
+    del.addEventListener("click", () => {
+      store.set(marksKey(current), marksOf(current).filter((x) => x.off !== m.off));
+      updateMarkUI(); renderMarks(); renderShelf();
+    });
+    li.append(go, del); ul.append(li);
+  }
+}
+function openMarks() { renderMarks(); $("marksPanel").hidden = false; $("marksBtn").setAttribute("aria-expanded", "true"); }
+function closeMarks() { $("marksPanel").hidden = true; $("marksBtn").setAttribute("aria-expanded", "false"); }
+$("markBtn").addEventListener("click", toggleMark);
+$("marksBtn").addEventListener("click", () => $("marksPanel").hidden ? openMarks() : closeMarks());
+let saveT;
+function saveAt() {
+  if (!current || current.sample) return;
+  const frac = L.spreads > 1 ? spread / (L.spreads - 1) : 0;
+  store.set("viewer.at." + current.name, { off: topOffset(), frac });
+  renderShelf();
+}
+const next = () => goto(spread + 1), prev = () => goto(spread - 1);
+
+/* 누르기: 왼쪽 30%는 앞쪽, 나머지는 다음 쪽 */
+stage.addEventListener("click", (e) => {
+  if (e.target.closest("a, button")) return;
+  if (!$("marksPanel").hidden) { closeMarks(); return; }
+  const r = stage.getBoundingClientRect();
+  (e.clientX - r.left < r.width * 0.3) ? prev() : next();
+});
+let wheelLock = 0;
+stage.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const now = Date.now(); if (now < wheelLock || Math.abs(e.deltaY) + Math.abs(e.deltaX) < 8) return;
+  wheelLock = now + 220;
+  (e.deltaY || e.deltaX) > 0 ? next() : prev();
+}, { passive: false });
+let touchX = null, touchY = null, swiped = false;
+stage.addEventListener("touchstart", (e) => { touchX = e.touches[0].clientX; touchY = e.touches[0].clientY; swiped = false; }, { passive: true });
+stage.addEventListener("touchend", (e) => {
+  if (touchX == null) return;
+  const dx = e.changedTouches[0].clientX - touchX, dy = e.changedTouches[0].clientY - touchY;
+  if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) { swiped = true; dx < 0 ? next() : prev(); e.preventDefault(); }
+  touchX = null;
+});
+addEventListener("keydown", (e) => {
+  if (e.target.matches?.("input, select")) return;
+  if (e.key === "Escape") { closeMarks(); return; }
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "b" || e.key === "B" || e.key === "ㅠ")) { e.preventDefault(); toggleMark(); return; }
+  const fwd = ["ArrowRight", "ArrowDown", "PageDown", "Enter"], back = ["ArrowLeft", "ArrowUp", "PageUp", "Backspace"];
+  if (e.key === " ") { e.preventDefault(); e.shiftKey ? prev() : next(); }
+  else if (fwd.includes(e.key)) { e.preventDefault(); next(); }
+  else if (back.includes(e.key)) { e.preventDefault(); prev(); }
+  else if (e.key === "Home") goto(0);
+  else if (e.key === "End") goto(L.spreads - 1);
+});
+let resizeT;
+new ResizeObserver(() => {
+  const off = topOffset();
+  clearTimeout(resizeT); resizeT = setTimeout(() => relayout(off), 80);
+}).observe(stage);
+
+/* ---- 열기 경로 ---- */
+$("openFiles").addEventListener("click", () => $("fileInput").click());
+$("openDir").addEventListener("click", () => $("dirInput").click());
+$("fileInput").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
+$("dirInput").addEventListener("change", (e) => { addFiles(e.target.files); e.target.value = ""; });
+$("menuBtn").addEventListener("click", () => document.body.classList.toggle("shelf-open"));
+
+let dragDepth = 0;
+addEventListener("dragenter", (e) => { e.preventDefault(); dragDepth++; $("drop").hidden = false; });
+addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; $("drop").hidden = true; } });
+addEventListener("dragover", (e) => e.preventDefault());
+addEventListener("drop", (e) => { e.preventDefault(); dragDepth = 0; $("drop").hidden = true; addFiles(e.dataTransfer.files); });
+
+/* ---- 시작: 보관함에서 책장을 되살린다 ---- */
+const sampleBook = () => ({ name: SAMPLE.name, text: SAMPLE.text, size: new Blob([SAMPLE.text]).size, sample: true });
+(async () => {
+  applySettings();
+  try { books = (await shelfDB.all()) || []; } catch { books = []; noteSave("이 창에서는 브라우저 저장소를 쓸 수 없어 책이 보관되지 않습니다."); }
+  sortBooks();
+  try { if (books.length && navigator.storage && navigator.storage.persist) await navigator.storage.persist(); } catch {}
+  const last = store.get("viewer.last", null);
+  if (!books.length) books = [sampleBook()];
+  renderShelf(); updateSaveNote();
+  open(books.find((b) => b.name === last) || books[0]);
+})();
+</script>
+
+</html>
