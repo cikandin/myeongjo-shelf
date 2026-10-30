@@ -231,6 +231,9 @@ body {
         <option value="dark">밤</option>
       </select>
     </label>
+    <label>인코딩
+      <select id="enc"></select>
+    </label>
     <span class="spacer"></span>
     <button class="btn" id="markBtn" type="button" aria-pressed="false" title="이 쪽에 책갈피 꽂기 (B)">책갈피 꽂기</button>
     <button class="btn" id="marksBtn" type="button" aria-expanded="false" aria-controls="marksPanel">목록</button>
@@ -298,7 +301,7 @@ const SAMPLE = {
 
 책장을 넘길 때는 펼침면의 오른쪽을 누르면 다음 쪽, 왼쪽을 누르면 앞쪽입니다. 키보드는 → ← 화살표, 스페이스바, PageDown·PageUp이 됩니다. 마우스 휠과 손가락으로 밀기도 됩니다.
 
-UTF-8 파일은 그대로 읽고, UTF-8이 아니면 EUC-KR(CP949)로 다시 읽어 봅니다.
+인코딩은 저절로 알아냅니다. UTF-8, EUC-KR(CP949), UTF-16, 일본어·중국어 인코딩까지 읽습니다. 그래도 글자가 깨져 보이면 위쪽 「인코딩」에서 직접 고릅니다.
 
 「획」에서 글자 획의 굵기를 고릅니다. 나눔명조는 가로획이 아주 가늘어서 화면에 따라 획이 군데군데 끊겨 보입니다. 「보강」은 획 둘레를 아주 얇게 칠해 끊긴 곳을 메우고, 「굵게」는 나눔명조 볼드체로 바꿉니다.`,
 };
@@ -354,10 +357,107 @@ async function ensureFont() {
 const uniqueChars = (s) => [...new Set(s.replace(/\s/g, ""))].join("");
 
 /* ---- 읽기 ---- */
-function decodeBuf(buf) {
-  try { return new TextDecoder("utf-8", { fatal: true }).decode(buf).replace(/^﻿/, ""); }
-  catch { return new TextDecoder("euc-kr").decode(buf); }
+/* ---- 인코딩 ----
+   BOM → 엄격한 UTF-8 → 후보를 차례로 풀어 '말이 되는 글'이 나오는 첫 후보.
+   EUC-KR(CP949)은 거의 모든 바이트열을 오류 없이 풀어 버리므로 깨진 글자 수만으로는 못 고른다.
+   그래서 풀린 글이 그럴듯한지를 센다: 낱자모(ㅟㅗ — 일본어 가나가 이렇게 풀린다) · KS 2350자 밖의 드문 한글 음절 ·
+   반각 가나 · 쓰이지 않는 유니코드 영역 · 한글보다 한자가 지나치게 많음(중국어가 이렇게 풀린다).
+   깨진 바이트가 몇 개 섞인 파일도 있어 '0개'가 아니라 '1% 미만'을 기준으로 삼는다. */
+const ENC_LABELS = {
+  "utf-8": "UTF-8", "euc-kr": "EUC-KR · CP949", "utf-16le": "UTF-16 LE", "utf-16be": "UTF-16 BE",
+  "shift_jis": "Shift_JIS (일본어)", "euc-jp": "EUC-JP (일본어)", "gb18030": "GBK · GB18030 (중국어 간체)",
+  "big5": "Big5 (중국어 번체)", "windows-1252": "Latin-1 (서유럽)",
+};
+const TRY_ORDER = ["utf-8", "utf-16le", "utf-16be", "euc-kr", "shift_jis", "euc-jp", "big5", "gb18030", "windows-1252"];
+const PLAUSIBLE = [
+  [0xA0, 0x24F], [0x370, 0x4FF], [0x2000, 0x2BFF], [0x3000, 0x30FF], [0x3200, 0x33FF],
+  [0x4E00, 0x9FFF], [0xAC00, 0xD7A3], [0xF900, 0xFAFF], [0xFF00, 0xFF60], [0xFFE0, 0xFFEE],
+];
+let KS = null;   // KS X 1001 완성형 한글 2350자 — EUC-KR 표의 B0A1~C8FE를 풀어 만든다
+function ksSyllables() {
+  if (KS) return KS;
+  const bytes = [];
+  for (let a = 0xB0; a <= 0xC8; a++) for (let t = 0xA1; t <= 0xFE; t++) bytes.push(a, t);
+  return (KS = new Set(new TextDecoder("euc-kr").decode(new Uint8Array(bytes))));
 }
+function countBad(s) { return weirdness(s, "").weird; }
+function weirdness(s, enc) {
+  const ks = ksSyllables(), latin = enc === "windows-1252";
+  let weird = 0, non = 0, hangul = 0, hanja = 0, kana = 0, prevHigh = false;
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    if (c < 0x80) {
+      if (c < 32 && c !== 9 && c !== 10 && c !== 12 && c !== 13) weird++;
+      prevHigh = false; continue;
+    }
+    non++;
+    if (c === 0xFFFD || c < 0xA0) weird++;
+    else if (c >= 0xAC00 && c <= 0xD7A3) { hangul++; if (!ks.has(ch)) weird++; }
+    else if (c >= 0x3131 && c <= 0x318E) weird++;
+    else if (c >= 0xFF61 && c <= 0xFF9F) weird++;
+    else if (latin) { if (prevHigh) weird++; }   // 서유럽 글은 악센트 글자가 홀로 끼고, 동아시아 글을 잘못 풀면 줄줄이 붙는다
+    else if ((c >= 0x4E00 && c <= 0x9FFF) || (c >= 0xF900 && c <= 0xFAFF)) hanja++;
+    else if (c >= 0x3041 && c <= 0x30FF) kana++;
+    else if (!PLAUSIBLE.some(([a, z]) => c >= a && c <= z)) weird++;
+    prevHigh = true;
+  }
+  if (enc === "euc-kr") weird += Math.max(0, hanja - hangul * 0.25);   // 중국어가 한글·한자 반반으로 풀린다
+  if (enc === "shift_jis" || enc === "euc-jp") { if (kana < (hanja + kana) * 0.1) weird += hanja; }   // 가나 없는 일본어는 없다
+  return { weird, non };
+}
+function detectEncoding(b) {
+  if (b[0] === 0xEF && b[1] === 0xBB && b[2] === 0xBF) return "utf-8";
+  if (b[0] === 0xFF && b[1] === 0xFE) return "utf-16le";
+  if (b[0] === 0xFE && b[1] === 0xFF) return "utf-16be";
+  const n = Math.min(b.length, 1 << 16);
+  let ze = 0, zo = 0;
+  for (let i = 0; i < n; i++) if (b[i] === 0) { if (i & 1) zo++; else ze++; }
+  if (n >= 4) {
+    if (zo > n * 0.1 && ze < n * 0.01) return "utf-16le";
+    if (ze > n * 0.1 && zo < n * 0.01) return "utf-16be";
+  }
+  try { new TextDecoder("utf-8", { fatal: true }).decode(b); return "utf-8"; } catch {}
+  const sample = b.subarray(0, Math.min(b.length, 1 << 16) & ~1);
+  let best = null;
+  for (const enc of TRY_ORDER) {
+    if (enc.startsWith("utf-16") && b.length % 2) continue;
+    let text;
+    try { text = new TextDecoder(enc).decode(sample); } catch { continue; }
+    const { weird, non } = weirdness(text, enc);
+    if (weird <= 2 + non * 0.01) return enc;
+    const ratio = weird / (non + 1);
+    if (!best || ratio < best.ratio) best = { enc, ratio };
+  }
+  return best ? best.enc : "utf-8";
+}
+const decodeAs = (bytes, enc) => new TextDecoder(enc).decode(bytes).replace(/^﻿/, "");
+const decodeBuf = (bytes) => decodeAs(bytes, detectEncoding(bytes));
+
+function renderEnc() {
+  const sel = $("enc"), b = current;
+  sel.textContent = "";
+  const auto = document.createElement("option");
+  auto.value = "auto";
+  auto.textContent = b && b.encDetected ? `자동 · ${ENC_LABELS[b.encDetected] || b.encDetected}` : "자동";
+  sel.append(auto);
+  for (const [v, l] of Object.entries(ENC_LABELS)) {
+    const o = document.createElement("option"); o.value = v; o.textContent = l; sel.append(o);
+  }
+  sel.value = b && b.encForced ? b.encForced : "auto";
+  sel.disabled = !(b && b.raw);
+  sel.title = sel.disabled
+    ? (b && !b.sample ? "예전에 꽂은 책입니다. 파일을 한 번 더 열면 인코딩을 바꿀 수 있습니다." : "")
+    : "글자가 깨져 보이면 바꿔 보세요";
+}
+$("enc").addEventListener("change", async (e) => {
+  const b = current;
+  if (!b || !b.raw) return;
+  b.encForced = e.target.value === "auto" ? null : e.target.value;
+  b.text = decodeAs(b.raw, b.encForced || b.encDetected).replace(/\r\n?/g, "\n");
+  try { await shelfDB.putMany([b]); } catch {}
+  current = null;
+  open(b);
+});
 const isTxt = (n) => /\.txt$/i.test(n);
 const isZip = (f) => /\.zip$/i.test(f.name) || /zip/.test(f.type);
 
@@ -388,14 +488,18 @@ async function addFiles(list) {
       try { items.push(...await unzip(f)); }
       catch (err) { failed = true; noteSave(`${f.name}을 열지 못했습니다. ${err && err.message || ""}`); }
     } else if (isTxt(f.name) || f.type === "text/plain") {
-      items.push({ name: f.name, buf: await f.arrayBuffer(), size: f.size, from: null });
+      items.push({ name: f.name, buf: new Uint8Array(await f.arrayBuffer()), size: f.size, from: null });
     }
   }
   if (!items.length) { if (!failed && [...list].some(isZip)) noteSave("압축 파일 안에 txt 파일이 없습니다."); return; }
   const files = items;
   const fresh = [];
   for (const f of files) {
-    const b = { name: f.name, text: decodeBuf(f.buf).replace(/\r\n?/g, "\n"), size: f.size, from: f.from, added: Date.now() };
+    const enc = detectEncoding(f.buf);
+    const b = {
+      name: f.name, text: decodeAs(f.buf, enc).replace(/\r\n?/g, "\n"), raw: f.buf,
+      encDetected: enc, encForced: null, size: f.size, from: f.from, added: Date.now(),
+    };
     const i = books.findIndex((x) => x.name === b.name);
     if (i >= 0) books[i] = b; else books.push(b);
     fresh.push(b);
@@ -462,6 +566,7 @@ async function open(b) {
   $("text").textContent = b.text.replace(/^\n+/, "");
   document.title = prettyName(b.name) + " · 명조 서재";
   store.set("viewer.last", b.name);
+  renderEnc();
   fontChars = uniqueChars(b.text);
   await ensureFont();
   const at = store.get("viewer.at." + b.name, null);
